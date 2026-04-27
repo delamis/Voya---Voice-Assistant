@@ -161,7 +161,27 @@ Proje içinde örnek dosya vardır. Önce kopyalayın:
 Copy-Item speaches.env.example speaches.env
 ```
 
-Sonra `speaches.env` dosyasını seçtiğiniz moda göre düzenleyin.
+Sonra dosyayı açın:
+
+```powershell
+notepad speaches.env
+```
+
+VS Code kullanıyorsanız:
+
+```powershell
+code speaches.env
+```
+
+`speaches.env` içinde üç önemli ayar vardır:
+
+| Ayar | Ne işe yarar? | Ne zaman gerekir? |
+| --- | --- | --- |
+| `CHAT_COMPLETION_BASE_URL` | Speaches'ın Ollama'ya ulaşacağı adres. | Sadece Local Ollama modunda gerekir. |
+| `LOOPBACK_HOST_URL` | Speaches'ın kendi STT/TTS endpoint'lerine ulaşacağı adres. | Her iki modda da gerekir. |
+| `ALLOW_ORIGINS` | Tarayıcıdan hangi adreslerin Speaches'a istek atabileceğini belirler. | Her iki modda da gerekir. |
+
+### Gemini için `speaches.env`
 
 Gemini kullanacaksanız bu dosya yeterlidir:
 
@@ -169,6 +189,14 @@ Gemini kullanacaksanız bu dosya yeterlidir:
 LOOPBACK_HOST_URL=http://localhost:8000
 ALLOW_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","http://YOUR_PC_LAN_IP:5173","https://localhost:5173","https://127.0.0.1:5173","https://YOUR_PC_LAN_IP:5173"]
 ```
+
+Gemini modunda `CHAT_COMPLETION_BASE_URL` satırı olmamalı veya başında `#` kalmalıdır:
+
+```env
+# CHAT_COMPLETION_BASE_URL=http://host.docker.internal:11434/v1
+```
+
+### Local Ollama için `speaches.env`
 
 Local Ollama kullanacaksanız bunu kullanın:
 
@@ -178,7 +206,61 @@ LOOPBACK_HOST_URL=http://localhost:8000
 ALLOW_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","http://YOUR_PC_LAN_IP:5173","https://localhost:5173","https://127.0.0.1:5173","https://YOUR_PC_LAN_IP:5173"]
 ```
 
-`YOUR_PC_LAN_IP` değerini bilmiyorsanız şimdilik olduğu gibi bırakabilirsiniz. Uygulama açıldıktan sonra `Assistant settings` -> `Phone access` bölümü bilgisayarınızın LAN adresini gösterir. Telefon kullanacaksanız bu değeri daha sonra güncelleyip Speaches'ı yeniden başlatabilirsiniz.
+Yani `speaches.env.example` dosyasındaki şu satırın başındaki `#` işaretini kaldırın:
+
+```env
+# CHAT_COMPLETION_BASE_URL=http://host.docker.internal:11434/v1
+```
+
+Son hali şöyle olmalı:
+
+```env
+CHAT_COMPLETION_BASE_URL=http://host.docker.internal:11434/v1
+```
+
+### `YOUR_PC_LAN_IP` Nasıl Set Edilir?
+
+Telefon/tablet kullanmayacaksanız `YOUR_PC_LAN_IP` değerini değiştirmeden bırakabilirsiniz.
+
+Telefon/tablet kullanacaksanız PC'nin LAN IP adresini bulun:
+
+```powershell
+ipconfig
+```
+
+Wi-Fi veya Ethernet bölümünde `IPv4 Address` değerini bulun. Örnek:
+
+```text
+192.168.1.242
+```
+
+Sonra `speaches.env` içinde `YOUR_PC_LAN_IP` geçen yerleri bu IP ile değiştirin.
+
+Önce:
+
+```env
+ALLOW_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","http://YOUR_PC_LAN_IP:5173","https://localhost:5173","https://127.0.0.1:5173","https://YOUR_PC_LAN_IP:5173"]
+```
+
+Sonra:
+
+```env
+ALLOW_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","http://192.168.1.242:5173","https://localhost:5173","https://127.0.0.1:5173","https://192.168.1.242:5173"]
+```
+
+IP adresiniz değişirse bu dosyayı tekrar güncelleyin.
+
+### `speaches.env` Değişince Ne Yapılmalı?
+
+`speaches.env` dosyasını değiştirdiğinizde Docker container otomatik güncellenmez. Speaches'ı yeniden başlatmanız gerekir.
+
+Çalışan container'ı durdurun:
+
+```powershell
+docker stop speaches
+```
+
+Sonra aşağıdaki Docker komutlarından CPU veya GPU olanı tekrar çalıştırın.
 
 Not: Gerçek `speaches.env` dosyası Git'e eklenmez. Her kullanıcının LAN IP ve local ayarları farklı olacağı için repo sadece `speaches.env.example` dosyasını içerir.
 
