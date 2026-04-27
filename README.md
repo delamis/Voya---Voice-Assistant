@@ -120,7 +120,7 @@ https://ollama.com/download
 
 1. Repoyu indirin.
 2. `npm install` çalıştırın.
-3. Speaches için `speaches.env` oluşturun.
+3. `speaches.env.example` dosyasını `speaches.env` olarak kopyalayın.
 4. Speaches Docker container'ını başlatın.
 5. Speaches STT/TTS modellerini indirin.
 6. Gemini kullanacaksanız Ollama adımlarını atlayın.
@@ -155,7 +155,13 @@ Speaches şu işlerden sorumludur:
 
 ### 2.1 `speaches.env` Dosyası
 
-Proje klasöründe `speaches.env` dosyası oluşturun.
+Proje içinde örnek dosya vardır. Önce kopyalayın:
+
+```powershell
+Copy-Item speaches.env.example speaches.env
+```
+
+Sonra `speaches.env` dosyasını seçtiğiniz moda göre düzenleyin.
 
 Gemini kullanacaksanız bu dosya yeterlidir:
 
@@ -173,6 +179,8 @@ ALLOW_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","http://YOUR_PC_L
 ```
 
 `YOUR_PC_LAN_IP` değerini bilmiyorsanız şimdilik olduğu gibi bırakabilirsiniz. Uygulama açıldıktan sonra `Assistant settings` -> `Phone access` bölümü bilgisayarınızın LAN adresini gösterir. Telefon kullanacaksanız bu değeri daha sonra güncelleyip Speaches'ı yeniden başlatabilirsiniz.
+
+Not: Gerçek `speaches.env` dosyası Git'e eklenmez. Her kullanıcının LAN IP ve local ayarları farklı olacağı için repo sadece `speaches.env.example` dosyasını içerir.
 
 ### 2.2 Speaches'ı Docker ile Başlatma
 
