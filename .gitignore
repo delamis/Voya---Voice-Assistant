@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.local
+*.log
+tmp-qa/
+scripts/verify-ui.mjs
+speaches.env
+certs/
