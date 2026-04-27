@@ -472,26 +472,77 @@ Bu değeri `speaches.env` içindeki `YOUR_PC_LAN_IP` yerine yazın ve Speaches c
 
 ### 5.2 HTTPS Sertifikası Oluşturma
 
-Mobil mikrofon için HTTPS gerekir. Bu proje `certs/lan-cert.pem` ve `certs/lan-key.pem` dosyaları varsa Vite'ı HTTPS ile başlatır.
+Bu bölüm sadece telefonu veya tableti mikrofonla kullanacaksanız gerekir. Uygulamayı sadece PC'de açacaksanız bu adımı atlayabilirsiniz.
 
-OpenSSL kuruluysa PowerShell'de çalıştırın. `192.168.1.242` değerini kendi PC IP adresinizle değiştirin:
+Neden gerekli?
+
+- Mobil tarayıcılar mikrofon iznini genelde sadece güvenli sayfalara verir.
+- `http://...` ile açılan sayfalarda telefon mikrofonu çalışmayabilir.
+- Bu yüzden uygulamayı telefonda `https://YOUR_PC_LAN_IP:5173` olarak açıyoruz.
+
+Bu proje şu iki dosyayı bulursa Vite otomatik olarak HTTPS ile başlar:
+
+```text
+certs/lan-cert.pem
+certs/lan-key.pem
+```
+
+Adım adım:
+
+1. PC'nizin LAN IP adresini bulun. Örnek: `192.168.1.242`
+2. PowerShell açın.
+3. Aşağıdaki komut bloğunda sadece ilk satırdaki IP adresini kendi IP adresinizle değiştirin.
+4. Komutu çalıştırın.
+5. `npm run dev` komutunu durdurup tekrar başlatın.
+
+Önce OpenSSL'in kurulu olup olmadığını kontrol edin:
 
 ```powershell
+& "C:\Program Files\OpenSSL-Win64\bin\openssl.exe" version
+```
+
+Eğer `openssl.exe` bulunamadı hatası alırsanız Windows için OpenSSL kurun veya aşağıdaki komutta `$openssl` satırını bilgisayarınızdaki gerçek `openssl.exe` yolu ile değiştirin.
+
+```powershell
+# Sadece bu IP adresini kendi PC IP adresinizle değiştirin.
 $env:LAN_IP = "192.168.1.242"
+
+# OpenSSL farklı bir klasörde kuruluysa sadece bu yolu değiştirin.
+$openssl = "C:\Program Files\OpenSSL-Win64\bin\openssl.exe"
+
 New-Item -ItemType Directory -Force certs
-& "C:\Program Files\OpenSSL-Win64\bin\openssl.exe" req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout certs/local-ca-key.pem -out certs/local-ca.pem -subj "/CN=Speaches Local Dev CA" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
+& $openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout certs/local-ca-key.pem -out certs/local-ca.pem -subj "/CN=Voya Local Dev CA" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
 @"
 subjectAltName=DNS:localhost,IP:127.0.0.1,IP:$env:LAN_IP
 basicConstraints=CA:FALSE
 keyUsage=digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
-"@ | Set-Content certs/lan.ext
-& "C:\Program Files\OpenSSL-Win64\bin\openssl.exe" req -newkey rsa:2048 -nodes -keyout certs/lan-key.pem -out certs/lan.csr -subj "/CN=$env:LAN_IP"
-& "C:\Program Files\OpenSSL-Win64\bin\openssl.exe" x509 -req -in certs/lan.csr -CA certs/local-ca.pem -CAkey certs/local-ca-key.pem -CAcreateserial -out certs/lan-cert.pem -days 825 -sha256 -extfile certs/lan.ext
-& "C:\Program Files\OpenSSL-Win64\bin\openssl.exe" x509 -outform der -in certs/local-ca.pem -out certs/speaches-local-ca.cer
+"@ | Set-Content -Encoding ascii certs/lan.ext
+& $openssl req -newkey rsa:2048 -nodes -keyout certs/lan-key.pem -out certs/lan.csr -subj "/CN=$env:LAN_IP"
+& $openssl x509 -req -in certs/lan.csr -CA certs/local-ca.pem -CAkey certs/local-ca-key.pem -CAcreateserial -out certs/lan-cert.pem -days 825 -sha256 -extfile certs/lan.ext
+& $openssl x509 -outform der -in certs/local-ca.pem -out certs/speaches-local-ca.cer
 ```
 
-Sonra `npm run dev` komutunu yeniden başlatın.
+Başarılı olursa `certs` klasöründe şu dosyalar oluşur:
+
+```text
+certs/lan-cert.pem
+certs/lan-key.pem
+certs/speaches-local-ca.cer
+```
+
+Sonra geliştirme sunucusunu yeniden başlatın:
+
+```powershell
+npm run dev
+```
+
+Sık karşılaşılan durumlar:
+
+- IP adresiniz değişirse sertifikayı yeniden oluşturun ve `speaches.env` içindeki IP adresini güncelleyin.
+- Telefonda hala sertifika uyarısı çıkarsa `certs/speaches-local-ca.cer` dosyasını telefona kurup güvenilir yapın.
+- Telefonda mikrofon açılmıyorsa QR kodun `https://...` ile başladığından emin olun.
+- Sertifika dosyaları kişisel/local dosyalardır; Git'e eklenmez.
 
 ### 5.3 QR Kod ile Açma
 
