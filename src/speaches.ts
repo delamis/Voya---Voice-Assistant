@@ -37,6 +37,11 @@ export type SpeachesChatResult = {
   rawResponse: unknown;
 };
 
+export type SpeachesTextChatResult = {
+  assistantText: string;
+  rawResponse: unknown;
+};
+
 type TranscriptionResponse = {
   text?: unknown;
 };
@@ -137,10 +142,7 @@ export async function sendAudioChat(
 ) {
   const endpoint = `${trimTrailingSlash(baseUrl)}/v1/chat/completions`;
   let response: Response;
-  const rolePrompt = systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT;
-  const wakeInstruction = wakeWord.trim()
-    ? ` The configured wake phrase is "${wakeWord.trim()}"; do not treat it as part of my message.`
-    : "";
+  const systemContent = getSystemContent(wakeWord, systemPrompt);
 
   try {
     response = await fetch(endpoint, {
@@ -157,7 +159,7 @@ export async function sendAudioChat(
         messages: [
           {
             role: "system",
-            content: `${rolePrompt}${wakeInstruction}`,
+            content: systemContent,
           },
           {
             role: "user",
@@ -191,6 +193,85 @@ export async function sendAudioChat(
   }
 
   const rawResponse = (await response.json()) as ChatCompletionResponse;
+  const parsedResponse = parseChatCompletion(rawResponse);
+
+  return {
+    ...parsedResponse,
+    rawResponse,
+  } satisfies SpeachesChatResult;
+}
+
+export async function sendTextChat(
+  baseUrl: string,
+  transcript: string,
+  wakeWord = "",
+  systemPrompt = DEFAULT_SYSTEM_PROMPT,
+) {
+  const endpoint = `${trimTrailingSlash(baseUrl)}/v1/chat/completions`;
+  let response: Response;
+
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        messages: [
+          {
+            role: "system",
+            content: getSystemContent(wakeWord, systemPrompt),
+          },
+          {
+            role: "user",
+            content: [
+              "This is the transcript of my spoken message.",
+              `Transcript: ${transcript}`,
+              "If the transcript includes the configured wake phrase, ignore only that phrase and answer the actual message naturally.",
+            ].join("\n"),
+          },
+        ],
+      }),
+    });
+  } catch (error) {
+    if (error instanceof TypeError && error.message === "Failed to fetch") {
+      throw new Error(`Could not read a text chat response from ${endpoint}.`);
+    }
+
+    throw error;
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Speaches text chat failed with ${response.status} ${response.statusText}: ${errorText}`,
+    );
+  }
+
+  const rawResponse = (await response.json()) as ChatCompletionResponse;
+  const parsedResponse = parseChatCompletion(rawResponse);
+
+  return {
+    assistantText: parsedResponse.assistantText,
+    rawResponse,
+  } satisfies SpeachesTextChatResult;
+}
+
+function trimTrailingSlash(value: string) {
+  return value.replace(/\/+$/, "");
+}
+
+function getSystemContent(wakeWord = "", systemPrompt = DEFAULT_SYSTEM_PROMPT) {
+  const rolePrompt = systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT;
+  const wakeInstruction = wakeWord.trim()
+    ? ` The configured wake phrase is "${wakeWord.trim()}"; do not treat it as part of my message.`
+    : "";
+
+  return `${rolePrompt}${wakeInstruction}`;
+}
+
+function parseChatCompletion(rawResponse: ChatCompletionResponse) {
   const message = rawResponse.choices?.[0]?.message;
   const assistantAudioBase64 = asString(message?.audio?.data);
   const assistantTranscript = asString(message?.audio?.transcript);
@@ -210,12 +291,7 @@ export async function sendAudioChat(
     assistantText,
     assistantAudioBase64,
     transcriptionText,
-    rawResponse,
-  } satisfies SpeachesChatResult;
-}
-
-function trimTrailingSlash(value: string) {
-  return value.replace(/\/+$/, "");
+  };
 }
 
 function textFromContent(content: unknown): string {

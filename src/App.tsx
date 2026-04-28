@@ -17,6 +17,7 @@ import {
   TTS_VOICE,
   getDefaultSpeachesBaseUrl,
   sendAudioChat,
+  sendTextChat,
   synthesizeSpeech,
   transcribeAudio,
 } from "./speaches";
@@ -56,6 +57,16 @@ type VisualizerMode =
   | "thinking"
   | "speaking"
   | "answered";
+type SubmitAssistantOptions = {
+  preferTextInput?: boolean;
+  wakeTranscriptionMs?: number;
+};
+type AssistantSubmitResult = {
+  assistantText: string;
+  assistantAudioBlob: Blob | null;
+  transcriptionText: string;
+  rawResponse: unknown;
+};
 
 const DEFAULT_WAKE_WORD = "hey assistant";
 const SYSTEM_PROMPT_STORAGE_KEY = "speaches-system-prompt";
@@ -460,14 +471,18 @@ function App() {
     }
   }
 
-  async function submitWavToAssistant(wavBlob: Blob, fallbackTranscription = "") {
+  async function submitWavToAssistant(
+    wavBlob: Blob,
+    fallbackTranscription = "",
+    options: SubmitAssistantOptions = {},
+  ) {
     assistantBusyRef.current = true;
 
     try {
       const result =
         llmProvider === "gemini"
           ? await submitWavToGeminiAssistant(wavBlob, fallbackTranscription)
-          : await submitWavToLocalAssistant(wavBlob, fallbackTranscription);
+          : await submitWavToLocalAssistant(wavBlob, fallbackTranscription, options);
 
       setAssistantText(result.assistantText || "No assistant text was returned.");
       setTranscriptionText(result.transcriptionText || fallbackTranscription);
@@ -540,7 +555,29 @@ function App() {
     }
   }
 
-  async function submitWavToLocalAssistant(wavBlob: Blob, fallbackTranscription = "") {
+  async function submitWavToLocalAssistant(
+    wavBlob: Blob,
+    fallbackTranscription = "",
+    options: SubmitAssistantOptions = {},
+  ): Promise<AssistantSubmitResult> {
+    const transcript = fallbackTranscription.trim();
+
+    if (options.preferTextInput && transcript) {
+      try {
+        return await submitTranscriptToLocalAssistant(transcript, options);
+      } catch (error) {
+        return submitAudioToLocalAssistant(wavBlob, fallbackTranscription, formatError(error));
+      }
+    }
+
+    return submitAudioToLocalAssistant(wavBlob, fallbackTranscription);
+  }
+
+  async function submitAudioToLocalAssistant(
+    wavBlob: Blob,
+    fallbackTranscription = "",
+    textRouteFallbackError = "",
+  ): Promise<AssistantSubmitResult> {
     setRequestStatus("sending to Speaches");
     const base64Wav = await wavBlobToBase64(wavBlob);
     const result = await sendAudioChat(
@@ -558,7 +595,59 @@ function App() {
       transcriptionText: result.transcriptionText || fallbackTranscription,
       rawResponse: {
         provider: "local",
+        route: "audio",
+        ...(textRouteFallbackError ? { textRouteFallbackError } : {}),
         speaches: result.rawResponse,
+      },
+    };
+  }
+
+  async function submitTranscriptToLocalAssistant(
+    transcript: string,
+    options: SubmitAssistantOptions = {},
+  ): Promise<AssistantSubmitResult> {
+    setRequestStatus("sending to Speaches");
+    const chatStartedAt = performance.now();
+    const chatResult = await sendTextChat(
+      baseUrlRef.current,
+      transcript,
+      wakeWordRef.current,
+      systemPrompt,
+    );
+    const chatMs = Math.round(performance.now() - chatStartedAt);
+    const assistantText = chatResult.assistantText.trim();
+
+    if (!assistantText) {
+      throw new Error("No assistant text was returned from local text chat.");
+    }
+
+    setRequestStatus("synthesizing speech");
+    const ttsStartedAt = performance.now();
+    const assistantAudioBlob = await synthesizeSpeech(baseUrlRef.current, assistantText);
+    const ttsMs = Math.round(performance.now() - ttsStartedAt);
+
+    return {
+      assistantText,
+      assistantAudioBlob,
+      transcriptionText: transcript,
+      rawResponse: {
+        provider: "local",
+        route: "wake-text",
+        transcription: transcript,
+        usedExistingWakeTranscription: true,
+        ...(options.wakeTranscriptionMs
+          ? { wakeTranscriptionMs: Math.round(options.wakeTranscriptionMs) }
+          : {}),
+        timings: {
+          chatMs,
+          ttsMs,
+        },
+        speaches: chatResult.rawResponse,
+        tts: {
+          model: TTS_MODEL,
+          voice: TTS_VOICE,
+          format: "wav",
+        },
       },
     };
   }
@@ -766,7 +855,9 @@ function App() {
       }
 
       setWakeStatus("checking speech");
+      const transcriptionStartedAt = performance.now();
       const transcript = (await transcribeAudio(baseUrlRef.current, wavBlob)).trim();
+      const wakeTranscriptionMs = Math.round(performance.now() - transcriptionStartedAt);
       setTranscriptionText(transcript);
 
       if (!wakeEnabledRef.current) {
@@ -788,7 +879,7 @@ function App() {
         clearWakeCommand();
         setLastIgnoredSpeech("");
         setWakeTranscript(transcript);
-        await answerWakeRecording(wavBlob, transcript);
+        await answerWakeRecording(wavBlob, transcript, wakeTranscriptionMs);
         return;
       }
 
@@ -810,7 +901,7 @@ function App() {
         return;
       }
 
-      await answerWakeRecording(wavBlob, transcript);
+      await answerWakeRecording(wavBlob, transcript, wakeTranscriptionMs);
     } catch (error) {
       wakeEnabledRef.current = false;
       clearWakeCommand();
@@ -820,14 +911,17 @@ function App() {
     }
   }
 
-  async function answerWakeRecording(wavBlob: Blob, transcript: string) {
+  async function answerWakeRecording(wavBlob: Blob, transcript: string, wakeTranscriptionMs = 0) {
     clearWakeCommand();
     setWakeStatus("wake word detected");
     resetConversationState();
     setTranscriptionText(transcript);
 
     try {
-      await submitWavToAssistant(wavBlob, transcript);
+      await submitWavToAssistant(wavBlob, transcript, {
+        preferTextInput: true,
+        wakeTranscriptionMs,
+      });
     } catch (error) {
       setRequestStatus("error");
       setErrorMessage(formatError(error));
