@@ -168,6 +168,7 @@ function App() {
   const assistantOutputAudioContextRef = useRef<AudioContext | null>(null);
   const assistantOutputSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const assistantOutputAnalyserRef = useRef<AnalyserNode | null>(null);
+  const assistantOutputBufferSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const assistantOutputFrameRef = useRef<number | undefined>(undefined);
   const assistantOutputDataRef = useRef<Uint8Array | null>(null);
   const assistantPlaybackAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -175,6 +176,7 @@ function App() {
   const assistantPlaybackUnlockPromiseRef = useRef<Promise<void> | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
   const assistantAudioUrlRef = useRef("");
+  const assistantAudioBlobRef = useRef<Blob | null>(null);
   const baseUrlRef = useRef(baseUrl);
   const wakeWordRef = useRef(wakeWord);
   const wakeEnabledRef = useRef(false);
@@ -258,8 +260,8 @@ function App() {
     }
   }, []);
 
-  function unlockAssistantPlayback() {
-    if (assistantPlaybackUnlockedRef.current) {
+  function unlockAssistantPlayback({ force = false }: { force?: boolean } = {}) {
+    if (assistantPlaybackUnlockedRef.current && !force) {
       return Promise.resolve();
     }
 
@@ -277,11 +279,44 @@ function App() {
     const previousCurrentTime = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
 
     assistantPlaybackUnlockPromiseRef.current = (async () => {
+      let resumeAudioContext = Promise.resolve(false);
+
+      try {
+        const audioContext = getAssistantOutputAudioContext({ create: true });
+
+        if (audioContext) {
+          ensureAssistantOutputAnalyser(audioContext);
+          primeAssistantAudioContext(audioContext);
+          resumeAudioContext = audioContext
+            .resume()
+            .then(() => audioContext.state === "running")
+            .catch(() => false);
+        }
+      } catch {
+        resumeAudioContext = Promise.resolve(false);
+      }
+
+      let unlockElement = Promise.resolve(false);
+
       try {
         audio.src = createSilentWavDataUrl();
         audio.load();
-        await audio.play();
-        audio.pause();
+        unlockElement = audio
+          .play()
+          .then(() => {
+            audio.pause();
+            return true;
+          })
+          .catch(() => false);
+      } catch {
+        unlockElement = Promise.resolve(false);
+      }
+
+      try {
+        const [audioContextUnlocked, elementUnlocked] = await Promise.all([
+          resumeAudioContext,
+          unlockElement,
+        ]);
 
         if (previousSrc) {
           audio.src = previousSrc;
@@ -295,12 +330,8 @@ function App() {
           audio.load();
         }
 
-        assistantPlaybackUnlockedRef.current = true;
-      } catch {
-        if (previousSrc) {
-          audio.src = previousSrc;
-        } else {
-          audio.removeAttribute("src");
+        if (audioContextUnlocked || elementUnlocked) {
+          assistantPlaybackUnlockedRef.current = true;
         }
       } finally {
         assistantPlaybackUnlockPromiseRef.current = null;
@@ -445,14 +476,15 @@ function App() {
       if (result.assistantAudioBlob) {
         setRequestStatus("playing response");
         const audioUrl = URL.createObjectURL(result.assistantAudioBlob);
+        assistantAudioBlobRef.current = result.assistantAudioBlob;
         setAssistantNeedsTap(false);
         setAssistantAudioUrl(audioUrl);
 
         try {
-          await playAssistantAudioUrl(audioUrl);
+          await playAssistantAudioUrl(audioUrl, result.assistantAudioBlob);
         } catch {
           setAssistantNeedsTap(true);
-          setErrorMessage("Phone autoplay was blocked. Tap Play response once.");
+          setErrorMessage("Autoplay was blocked. Tap Play response once.");
         }
       }
 
@@ -462,7 +494,7 @@ function App() {
     }
   }
 
-  async function playAssistantAudioUrl(audioUrl: string) {
+  async function playAssistantAudioUrl(audioUrl: string, audioBlob = assistantAudioBlobRef.current) {
     const audio = assistantPlaybackAudioRef.current;
 
     if (!audio) {
@@ -471,6 +503,18 @@ function App() {
 
     audio.src = audioUrl;
     audio.currentTime = 0;
+    await resumeAssistantOutputContextIfUnlocked();
+
+    if (audioBlob && canPlayAssistantBlobWithAudioContext()) {
+      try {
+        audio.pause();
+        await playAssistantBlobWithAudioContext(audioBlob);
+        return;
+      } catch {
+        stopAssistantOutputVisualization();
+      }
+    }
+
     await playAudioToEnd(audio, {
       onBeforePlay: () => startAssistantOutputVisualization(audio),
       onDone: stopAssistantOutputVisualization,
@@ -486,13 +530,13 @@ function App() {
       setErrorMessage("");
       setAssistantNeedsTap(false);
       setRequestStatus("playing response");
-      await unlockAssistantPlayback();
-      await playAssistantAudioUrl(assistantAudioUrlRef.current);
+      await unlockAssistantPlayback({ force: true });
+      await playAssistantAudioUrl(assistantAudioUrlRef.current, assistantAudioBlobRef.current);
       setRequestStatus("complete");
     } catch {
       setAssistantNeedsTap(true);
       setRequestStatus("complete");
-      setErrorMessage("Phone autoplay is still blocked. Use the audio controls.");
+      setErrorMessage("Autoplay is still blocked. Use the audio controls.");
     }
   }
 
@@ -1067,73 +1111,71 @@ function App() {
     recordingProcessorRef.current = null;
   }
 
-  function startAssistantOutputVisualization(audio: HTMLAudioElement) {
+  function getAssistantOutputAudioContext({ create = false }: { create?: boolean } = {}) {
     const AudioContextConstructor = getAudioContextConstructor();
 
     if (!AudioContextConstructor) {
-      return;
+      return null;
     }
 
+    let audioContext = assistantOutputAudioContextRef.current;
+
+    if (audioContext?.state === "closed") {
+      assistantOutputAudioContextRef.current = null;
+      assistantOutputSourceRef.current = null;
+      assistantOutputAnalyserRef.current = null;
+      assistantOutputDataRef.current = null;
+      audioContext = null;
+    }
+
+    if (!audioContext && create) {
+      audioContext = new AudioContextConstructor();
+      assistantOutputAudioContextRef.current = audioContext;
+    }
+
+    return audioContext;
+  }
+
+  function ensureAssistantOutputAnalyser(audioContext: AudioContext) {
+    let analyser = assistantOutputAnalyserRef.current;
+
+    if (!analyser) {
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.connect(audioContext.destination);
+      assistantOutputAnalyserRef.current = analyser;
+    }
+
+    return analyser;
+  }
+
+  function ensureAssistantMediaGraph(audio: HTMLAudioElement) {
+    const audioContext = getAssistantOutputAudioContext();
+
+    if (!audioContext || audioContext.state !== "running") {
+      return null;
+    }
+
+    const analyser = ensureAssistantOutputAnalyser(audioContext);
+
+    if (!assistantOutputSourceRef.current) {
+      const source = audioContext.createMediaElementSource(audio);
+      source.connect(analyser);
+      assistantOutputSourceRef.current = source;
+    }
+
+    return { analyser, audioContext };
+  }
+
+  function startAssistantOutputVisualization(audio: HTMLAudioElement) {
     try {
-      stopAssistantOutputVisualization({ resetSignal: false });
+      const graph = ensureAssistantMediaGraph(audio);
 
-      let audioContext = assistantOutputAudioContextRef.current;
-      let analyser = assistantOutputAnalyserRef.current;
-
-      if (!audioContext || audioContext.state === "closed") {
-        audioContext = new AudioContextConstructor();
-        assistantOutputAudioContextRef.current = audioContext;
+      if (!graph) {
+        return;
       }
 
-      if (!assistantOutputSourceRef.current) {
-        const source = audioContext.createMediaElementSource(audio);
-        assistantOutputSourceRef.current = source;
-      }
-
-      if (!analyser) {
-        analyser = audioContext.createAnalyser();
-        analyser.fftSize = 1024;
-        assistantOutputAnalyserRef.current = analyser;
-        const source = assistantOutputSourceRef.current;
-
-        if (!source) {
-          return;
-        }
-
-        source.connect(analyser);
-        analyser.connect(audioContext.destination);
-      }
-
-      assistantOutputDataRef.current = new Uint8Array(analyser.fftSize);
-
-      const updateAssistantSignal = () => {
-        const data = assistantOutputDataRef.current;
-        const currentAnalyser = assistantOutputAnalyserRef.current;
-
-        if (!data || !currentAnalyser || audio.paused || audio.ended) {
-          return;
-        }
-
-        currentAnalyser.getByteTimeDomainData(data);
-        let squareSum = 0;
-
-        for (const sample of data) {
-          const centeredSample = (sample - 128) / 128;
-          squareSum += centeredSample * centeredSample;
-        }
-
-        const rms = Math.sqrt(squareSum / data.length);
-        setVoiceSignal({
-          level: rms,
-          threshold: 0.045,
-          noise: 0,
-        });
-        setVoiceActivity(`assistant output level ${rms.toFixed(3)}`);
-        assistantOutputFrameRef.current = window.requestAnimationFrame(updateAssistantSignal);
-      };
-
-      void audioContext.resume();
-      assistantOutputFrameRef.current = window.requestAnimationFrame(updateAssistantSignal);
+      startAssistantAnalyserLoop(graph.analyser, () => !audio.paused && !audio.ended);
     } catch {
       setVoiceSignal({
         level: 0.035,
@@ -1141,6 +1183,149 @@ function App() {
         noise: 0,
       });
     }
+  }
+
+  function startAssistantAnalyserLoop(analyser: AnalyserNode, isActive: () => boolean) {
+    stopAssistantOutputVisualization({ resetSignal: false });
+    assistantOutputDataRef.current = new Uint8Array(analyser.fftSize);
+
+    const updateAssistantSignal = () => {
+      const data = assistantOutputDataRef.current;
+
+      if (!data || !isActive()) {
+        return;
+      }
+
+      analyser.getByteTimeDomainData(data);
+      let squareSum = 0;
+
+      for (const sample of data) {
+        const centeredSample = (sample - 128) / 128;
+        squareSum += centeredSample * centeredSample;
+      }
+
+      const rms = Math.sqrt(squareSum / data.length);
+      setVoiceSignal({
+        level: rms,
+        threshold: 0.045,
+        noise: 0,
+      });
+      setVoiceActivity(`assistant output level ${rms.toFixed(3)}`);
+      assistantOutputFrameRef.current = window.requestAnimationFrame(updateAssistantSignal);
+    };
+
+    assistantOutputFrameRef.current = window.requestAnimationFrame(updateAssistantSignal);
+  }
+
+  function canPlayAssistantBlobWithAudioContext() {
+    const audioContext = assistantOutputAudioContextRef.current;
+    return Boolean(audioContext && audioContext.state === "running");
+  }
+
+  async function resumeAssistantOutputContextIfUnlocked() {
+    const audioContext = assistantOutputAudioContextRef.current;
+
+    if (!assistantPlaybackUnlockedRef.current || !audioContext || audioContext.state !== "suspended") {
+      return;
+    }
+
+    await audioContext.resume().catch(() => undefined);
+  }
+
+  async function playAssistantBlobWithAudioContext(audioBlob: Blob) {
+    const audioContext = getAssistantOutputAudioContext();
+
+    if (!audioContext || audioContext.state !== "running") {
+      throw new Error("Assistant audio context is not unlocked.");
+    }
+
+    stopAssistantOutputBufferSource();
+    const analyser = ensureAssistantOutputAnalyser(audioContext);
+    const audioBuffer = await audioContext.decodeAudioData(await audioBlob.arrayBuffer());
+    const source = audioContext.createBufferSource();
+    let isPlaying = true;
+
+    source.buffer = audioBuffer;
+    source.connect(analyser);
+    assistantOutputBufferSourceRef.current = source;
+
+    await new Promise<void>((resolve, reject) => {
+      source.addEventListener(
+        "ended",
+        () => {
+          isPlaying = false;
+          try {
+            source.disconnect();
+          } catch {
+            // Already disconnected.
+          }
+
+          if (assistantOutputBufferSourceRef.current === source) {
+            assistantOutputBufferSourceRef.current = null;
+          }
+
+          stopAssistantOutputVisualization();
+          resolve();
+        },
+        { once: true },
+      );
+
+      try {
+        startAssistantAnalyserLoop(
+          analyser,
+          () => isPlaying && audioContext.state !== "closed" && audioContext.state !== "suspended",
+        );
+        source.start();
+      } catch (error) {
+        isPlaying = false;
+        try {
+          source.disconnect();
+        } catch {
+          // Already disconnected.
+        }
+
+        if (assistantOutputBufferSourceRef.current === source) {
+          assistantOutputBufferSourceRef.current = null;
+        }
+
+        stopAssistantOutputVisualization();
+        reject(error);
+      }
+    });
+  }
+
+  function stopAssistantOutputBufferSource() {
+    const source = assistantOutputBufferSourceRef.current;
+
+    if (!source) {
+      return;
+    }
+
+    assistantOutputBufferSourceRef.current = null;
+
+    try {
+      source.stop();
+    } catch {
+      // Already stopped.
+    }
+
+    try {
+      source.disconnect();
+    } catch {
+      // Already disconnected.
+    }
+  }
+
+  function primeAssistantAudioContext(audioContext: AudioContext) {
+    const sampleCount = Math.max(1, Math.floor(audioContext.sampleRate * 0.05));
+    const source = audioContext.createBufferSource();
+    const gain = audioContext.createGain();
+
+    source.buffer = audioContext.createBuffer(1, sampleCount, audioContext.sampleRate);
+    gain.gain.value = 0;
+    source.connect(gain);
+    gain.connect(audioContext.destination);
+    source.start();
   }
 
   function stopAssistantOutputVisualization({
@@ -1153,6 +1338,7 @@ function App() {
     }
 
     if (dispose) {
+      stopAssistantOutputBufferSource();
       assistantOutputSourceRef.current?.disconnect();
       assistantOutputAnalyserRef.current?.disconnect();
 
@@ -1166,6 +1352,7 @@ function App() {
       assistantOutputAudioContextRef.current = null;
       assistantOutputSourceRef.current = null;
       assistantOutputAnalyserRef.current = null;
+      assistantOutputBufferSourceRef.current = null;
       assistantOutputDataRef.current = null;
     }
 
@@ -1194,6 +1381,7 @@ function App() {
 
   function revokeAssistantAudioUrl() {
     stopAssistantOutputVisualization();
+    assistantAudioBlobRef.current = null;
 
     if (assistantAudioUrlRef.current) {
       URL.revokeObjectURL(assistantAudioUrlRef.current);
@@ -1979,7 +2167,7 @@ function playAudioToEnd(
 
 function createSilentWavDataUrl() {
   const sampleRate = 8000;
-  const sampleCount = 2;
+  const sampleCount = Math.floor(sampleRate * 0.2);
   const buffer = new ArrayBuffer(44 + sampleCount * 2);
   const view = new DataView(buffer);
   let offset = 0;
